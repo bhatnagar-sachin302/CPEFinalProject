@@ -7,8 +7,6 @@
 #define RDA 0x80
 #define TBE 0x20
 
-uRTCLib rtc(0x68);
-
 
 // UART Pointers
 volatile unsigned char *myUCSR0A  = (unsigned char *) 0xC0;
@@ -93,6 +91,13 @@ volatile unsigned char seconds = 0; // Keeps track of how many times the timer h
 #define WATER_LEVEL_SENSOR 1
 unsigned short waterLevel;
 
+
+// RTC
+#define RTC_I2C_ADDRESS 0x68
+uRTCLib rtc(RTC_I2C_ADDRESS);
+
+
+
 void setup()
 {
 
@@ -111,12 +116,18 @@ void setup()
   lcd.noCursor();
   lcd.display();
   setup_timer_regs();
+
+  // RTC
+  URTCLIB_WIRE.begin();
+  // LEAVE COMMENTED
+  // rtc.set(10, 59, 16, 2, 1, 5, 23);
 }
 
 
 
 void loop()
 {
+  rtc.refresh();
   adjustVents();
 
   if (updateDisplay) {
@@ -127,7 +138,25 @@ void loop()
   waterLevel = adc_read(WATER_LEVEL_SENSOR);
   Serial.println("USE RELAY FOR MOTOR");
   Serial.print("Water level: ");
-  Serial.println()
+  Serial.println();
+
+  Serial.print("Current Date & Time: ");
+  Serial.print(rtc.year());
+  Serial.print('/');
+  Serial.print(rtc.month());
+  Serial.print('/');
+  Serial.print(rtc.day());
+
+  Serial.print(" (");
+  Serial.print(rtc.dayOfWeek());
+   Serial.print(") ");
+
+  Serial.print(rtc.hour());
+  Serial.print(':');
+  Serial.print(rtc.minute());
+  Serial.print(':');
+  Serial.println(rtc.second());
+  
 }
 
 
