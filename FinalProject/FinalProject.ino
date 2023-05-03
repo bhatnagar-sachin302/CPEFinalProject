@@ -57,7 +57,7 @@ unsigned short ventStepperPositition;
 
 
 // Humidity
-#define HUMIDITY_SENSOR 6
+#define HUMIDITY_SENSOR 9
 unsigned char temperature;
 unsigned char humidity;
 
@@ -92,11 +92,11 @@ volatile unsigned char seconds = 0; // Keeps track of how many times the timer h
 
 
 // Fan
-#define FAN 0
+#define FAN 0 // Bit 0 on PORT_B is 53
 
 
 // Water Level Sensor
-#define WATER_LEVEL_SENSOR 0 // Analog
+#define WATER_LEVEL_SENSOR 2 // Analog
 unsigned short waterLevel;
 
 
@@ -106,16 +106,19 @@ uRTCLib rtc(RTC_I2C_ADDRESS);
 
 
 // Buttons
-#define START_STOP_BUTTON 2 // 2 On PORT_B has an interrupt vector
-#define RESET_BUTTON 0
+#define START_STOP_BUTTON 1 // Bit 1 on PORT_B is 52
+#define RESET_BUTTON 2      // Bit 2 on PORT_B is 51
+volatile bool debouncing;
 
+// Port B 53 52 51 50 10 11 12 13
 // LEDs (on PORT_B)
+#define BLUE_LED   4
+#define GREEN_LED  5
+#define RED_LED    6
+#define YELLOW_LED 7
+
 #define OFF 0
 #define ON 1
-#define GREEN_LED  0
-#define YELLOW_LED 0
-#define BLUE_LED   0
-#define RED_LED    0
 
 // Thresholds
 #define TEMPERATURE_TARGET 20
@@ -155,14 +158,20 @@ void setup()
   // LEAVE COMMENTED
   // rtc.set(10, 59, 16, 2, 1, 5, 23);
 
-  // Start button
-  *ddr_b &= ~(1 << START_STOP_BUTTON);
+  // Buttons
+  *DDR_B &= ~(1 << START_STOP_BUTTON);
+  *DDR_B &= ~(1 << RESET_BUTTON);
+  // Start Stop Button Interrups
+  PCICR |= 0b00000001;
+  PCMSK0 |= 1 << START_STOP_BUTTON;
+  debouncing = false;
 
   // LEDs
-  *ddr_b |= 1 << GREEN_LED;
-  *ddr_b |= 1 << YELLOW_LED;
-  *ddr_b |= 1 << BLUE_LED;
-  *ddr_b |= 1 << RED_LED;
+  *DDR_B |= 1 << GREEN_LED;
+  *DDR_B |= 1 << YELLOW_LED;
+  *DDR_B |= 1 << BLUE_LED;
+  *DDR_B |= 1 << RED_LED;
+  *DDR_B |= 1 << FAN;
 
 
   // Starting State
@@ -176,85 +185,96 @@ void loop()
   // Always update the clock
   rtc.refresh();
 
-  if (updateDisplay) {
-    displayTemperatureData();
-    updateDisplay = false;
+  // Debounce the button so the ISR doesnt trigger multiple times
+  if (debouncing) {
+    delay(500);
+    debouncing = false;
   }
 
+  // One a one minute timer
+  if (updateDisplay) {
+    updateAndDisplayTemperatureData();
+    updateDisplay = false;
+  }
 
   switch (coolerState)
   {
     case DISABLED:
       stopDisplayRefreshTimer();
-      // Yellow LED on 
-      setLED(RED, OFF);
-      setLED(GREEN, OFF);
-      setLED(BLUE, OFF);
-      setLED(YELLOW, ON);
+      lcd.clear();
       lcd.print("DISABLED");
+      // Yellow LED on 
+      setPin(RED_LED, OFF);
+      setPin(GREEN_LED, OFF);
+      setPin(BLUE_LED, OFF);
+      setPin(YELLOW_LED, ON);
+      setPin(FAN, OFF);
       adjustVents();
       break;
 
 
     case IDLE:
       // Green LED on 
-      setLED(RED, OFF);
-      setLED(GREEN, ON);
-      setLED(BLUE, OFF);
-      setLED(YELLOW, OFF);
+      setPin(RED_LED, OFF);
+      setPin(GREEN_LED, ON);
+      setPin(BLUE_LED, OFF);
+      setPin(YELLOW_LED, OFF);
 
       setPin(FAN, OFF);
       adjustVents();
       // Temperature data is updated every minute from timer ISR
-      if (temperature >= TEMPERATURE_HIGH) {
-        printString(getDateString() + "    TEMPERATURE TOO HOT - FAN TURNING ON");
-        coolerState = RUNNING
-
-      } else if (adc_read(WATER_LEVEL_SENSOR) <= WATER_LEVEL_THRESHOLD) {
-        printString(getDateString() + "    ERROR: WATER LEVEL TOO LOW");
+      if (adc_read(WATER_LEVEL_SENSOR) <= WATER_LEVEL_THRESHOLD) {
+        printString(getDateString() + "    ERROR: WATER LEVEL TOO LOW (" + String(adc_read(WATER_LEVEL_SENSOR)) + "- NEED >" + String(WATER_LEVEL_THRESHOLD) + ")\n");
         coolerState = ERROR;
+
+      } else if (temperature >= TEMPERATURE_HIGH) {
+        printString(getDateString() + "    TEMPERATURE TOO HOT - FAN TURNING ON\n");
+        coolerState = RUNNING;
       }
       break;
 
 
     case RUNNING:
       // Blue LED on 
-      setLED(RED, OFF);
-      setLED(GREEN, OFF);
-      setLED(BLUE, ON);
-      setLED(YELLOW, OFF);
+      setPin(RED_LED, OFF);
+      setPin(GREEN_LED, OFF);
+      setPin(BLUE_LED, ON);
+      setPin(YELLOW_LED, OFF);
 
       setPin(FAN, ON);
       adjustVents();
 
       // Temperature data is updated every minute from timer ISR
-      if (temperature <= TEMPERATURE_TARGET) {
-        printString(getDateString() + "    TARGET TEMPERATURE REACHED - FAN TURNING OFF");
-        coolerState = IDLE;
-        
-      } else if (adc_read(WATER_LEVEL_SENSOR) <= WATER_LEVEL_THRESHOLD) {
-        printString(getDateString() + "    ERROR: WATER LEVEL TOO LOW");
+      if (adc_read(WATER_LEVEL_SENSOR) <= WATER_LEVEL_THRESHOLD) {
+        printString(getDateString() + "    ERROR: WATER LEVEL TOO LOW (" + String(adc_read(WATER_LEVEL_SENSOR)) + "- NEED >" + String(WATER_LEVEL_THRESHOLD) + ")\n");
         coolerState = ERROR;
+      } else if (temperature <= TEMPERATURE_TARGET) {
+        printString(getDateString() + "    TARGET TEMPERATURE REACHED - FAN TURNING OFF\n");
+        coolerState = IDLE;
       }
       break;
 
 
     case ERROR:
       // Red LED on
-      setLED(RED, ON);
-      setLED(GREEN, OFF);
-      setLED(BLUE, OFF);
-      setLED(YELLOW, OFF);
-
+      setPin(RED_LED, ON);
+      setPin(GREEN_LED, OFF);
+      setPin(BLUE_LED, OFF);
+      setPin(YELLOW_LED, OFF);
+      Serial.println(adc_read(WATER_LEVEL_SENSOR));
       stopDisplayRefreshTimer();
-      lcd.print("ERROR");
+      lcd.clear();
+      lcd.print("ERROR - WATER LOW");
 
       setPin(FAN, OFF);
       if (isButtonPressed(RESET_BUTTON)) {
         if (adc_read(WATER_LEVEL_SENSOR) > WATER_LEVEL_THRESHOLD) {
           coolerState = IDLE;
-          printString(getDateString() + "    WATER LEVEL VALID, RETURNING TO IDLE");
+          printString(getDateString() + "    WATER LEVEL VALID, RETURNING TO IDLE\n");
+          updateAndDisplayTemperatureData();
           startDisplayRefreshTimer();
+        } else {
+          printString(getDateString() + "    CANT RETURN TO IDLE, NOT ENOUGHT WATER (" + String(adc_read(WATER_LEVEL_SENSOR)) + " - NEED >" + String(WATER_LEVEL_THRESHOLD) + ")\n");
         }
       }
       break;
@@ -272,7 +292,6 @@ void adjustVents()
     ventStepper.step(stepsToMove/STEP_RATIO_FOR_VENTS);
   }
 }
-
 
 void updateAndDisplayTemperatureData()
 {
@@ -349,20 +368,25 @@ String getDateString()
 }
 
 
-// Start button ISR
-ISR(PCINT2)
+//Start button ISR
+ISR(PCINT0_vect)
 {
-  printString("BUTTON PRESSED");
-  if (coolerState == DISABLED)
-  {
-    coolerState = IDLE;
-    printString(getDateString() + "    START BUTTON PRESSED: GOING TO IDLE");
-    startDisplayRefreshTimer();
-  } else {
-    printString(getDateString() + "    STOP BUTTON PRESSED: GOING TO DISABLED");
-    coolerState = DISABLED;
+  if (!debouncing) {
+    // Rising edge only
+    if (isButtonPressed(START_STOP_BUTTON)) {
+      if (coolerState == DISABLED)
+      {
+        coolerState = IDLE;
+        printString(getDateString() + "    START BUTTON PRESSED: GOING TO IDLE\n");
+        updateAndDisplayTemperatureData();
+        startDisplayRefreshTimer();
+      } else {
+        printString(getDateString() + "    STOP BUTTON PRESSED: GOING TO DISABLED\n");
+        coolerState = DISABLED;
+      }
+    }
+    debouncing = true;
   }
-
 }
 
 // TIMER OVERFLOW ISR
