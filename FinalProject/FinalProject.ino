@@ -162,8 +162,8 @@ void setup()
   *DDR_B &= ~(1 << START_STOP_BUTTON);
   *DDR_B &= ~(1 << RESET_BUTTON);
   // Start Stop Button Interrups
-  PCICR |= 0b00000001;
-  PCMSK0 |= 1 << START_STOP_BUTTON;
+  PCICR |= 0b00000001; // Set group 1 to have pin change interrupts
+  PCMSK0 |= 1 << START_STOP_BUTTON; //  Set it such that the start/stop button pin triggers an interupt
   debouncing = false;
 
   // LEDs
@@ -324,7 +324,7 @@ bool isButtonPressed(unsigned char button)
 }
 
 
-bool setPin(unsigned char pin, bool onOff)
+void setPin(unsigned char pin, bool onOff)
 {
   if (onOff){
     *PORT_B |= 1 << pin;
