@@ -6,8 +6,6 @@
 * Mikayla Dela Rosa
 * Cassandra Macon
 <br>
-<br>
-<br>
 
 ## Notes
 We all contributed to the code on the same laptop, this was easier for us because we are not familiar with git.<br>
