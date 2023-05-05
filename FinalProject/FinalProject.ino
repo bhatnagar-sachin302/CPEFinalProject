@@ -40,15 +40,15 @@ volatile unsigned char* PIN_B  = (unsigned char*) 0x23;
 #define STEPS_PER_REVOLUTION 2038 // 32 steps but has a 63.68395:1 gearbox inside
 #define STEPPER_SPEED 15 // RPMs
 
-#define STEPPER_IN1 2
-#define STEPPER_IN2 3
+#define STEPPER_IN1 6
+#define STEPPER_IN2 5
 #define STEPPER_IN3 4
-#define STEPPER_IN4 5
+#define STEPPER_IN4 3
 
 #define STEP_RATIO_FOR_VENTS 2.7
 
 #define POTENTIOMETER_ANALOG_PIN 1
-#define VENT_ADC_TOLERANCE 100
+#define VENT_ADC_TOLERANCE 200
 
 #define ANALOG_MAX 1024
 
@@ -57,9 +57,9 @@ unsigned short ventStepperPositition;
 
 
 // Humidity
-#define HUMIDITY_SENSOR 9
-unsigned char temperature;
-unsigned char humidity;
+#define HUMIDITY_SENSOR 7
+volatile unsigned char temperature;
+volatile unsigned char humidity;
 
 dht11 DHT;
 
@@ -81,22 +81,18 @@ dht11 DHT;
 #define LCD_ROWS 2
 
 LiquidCrystal lcd(LCD_RS, LCD_RW, LCD_E, LCD_D0, LCD_D1, LCD_D2, LCD_D3, LCD_D4, LCD_D5, LCD_D6, LCD_D7);
-bool updateDisplay = true;
+volatile bool updateDisplay = true;
 
 // Timers
-#define TIMER_STOP  0xF8
-#define TIMER_START 0x04 // 256 Prescaling
-#define TICKS_PER_SECOND 62500 // Not enough ticks to delay 1 minute even wtih 1024 presclaing
-#define SECONDS_PER_UPDATE 60
-volatile unsigned char seconds = 0; // Keeps track of how many times the timer has ticked to update display once per minute as per directions
+unsigned char previousMinute; // Keeps track of how many times the timer has ticked to update display once per minute as per directions
 
 
 // Fan
-#define FAN 0 // Bit 0 on PORT_B is 53
+#define FAN 1 // Bit 1 on PORT_B is 52
 
 
 // Water Level Sensor
-#define WATER_LEVEL_SENSOR 2 // Analog
+#define WATER_LEVEL_SENSOR 0 // Analog
 unsigned short waterLevel;
 
 
@@ -106,23 +102,23 @@ uRTCLib rtc(RTC_I2C_ADDRESS);
 
 
 // Buttons
-#define START_STOP_BUTTON 1 // Bit 1 on PORT_B is 52
-#define RESET_BUTTON 2      // Bit 2 on PORT_B is 51
+#define START_STOP_BUTTON 2 // Bit 2 on PORT_B is 51
+#define RESET_BUTTON 0      // Bit 0 on PORT_B is 53
 volatile bool debouncing;
 
 // Port B 53 52 51 50 10 11 12 13
 // LEDs (on PORT_B)
-#define BLUE_LED   4
-#define GREEN_LED  5
-#define RED_LED    6
-#define YELLOW_LED 7
+#define RED_LED    4
+#define YELLOW_LED 5
+#define GREEN_LED  6
+#define BLUE_LED   7
 
 #define OFF 0
 #define ON 1
 
 // Thresholds
-#define TEMPERATURE_TARGET 20
-#define TEMPERATURE_HIGH  25
+#define TEMPERATURE_TARGET 22
+#define TEMPERATURE_HIGH  23
 #define WATER_LEVEL_THRESHOLD 200
 
 // Cooler States
@@ -151,7 +147,6 @@ void setup()
   lcd.clear();
   lcd.noCursor();
   lcd.display();
-  setup_timer_regs();
 
   // RTC
   URTCLIB_WIRE.begin();
@@ -176,6 +171,7 @@ void setup()
 
   // Starting State
   coolerState = DISABLED;
+  previousMinute = 100; // Guarantee it activates first time throught loop
 }
 
 
@@ -191,94 +187,121 @@ void loop()
     debouncing = false;
   }
 
-  // One a one minute timer
+  // The first tiem this runs it might not be exaclty one minute due to discrepincy of seconds.
+  // Every other time it will update every minute
   if (updateDisplay) {
-    updateAndDisplayTemperatureData();
-    updateDisplay = false;
+    unsigned char minute = rtc.minute();
+    if (previousMinute != minute) {
+      updateAndDisplayTemperatureData();
+      previousMinute = minute;
+    }
   }
+
 
   switch (coolerState)
   {
     case DISABLED:
-      stopDisplayRefreshTimer();
+      // Stop displaying temperature and humidity
+      updateDisplay = false;
       lcd.clear();
-      lcd.print("DISABLED");
-      // Yellow LED on 
-      setPin(RED_LED, OFF);
-      setPin(GREEN_LED, OFF);
-      setPin(BLUE_LED, OFF);
+      // Cooler state can change because of ISR
+      if (coolerState == DISABLED) {
+        lcd.print("I'm disabled :P");
+      }
+
+      adjustVents();
+
+      setPin(FAN, OFF);
+
+      // Yellow LED on
       setPin(YELLOW_LED, ON);
-      setPin(FAN, OFF);
-      adjustVents();
-      break;
-
-
-    case IDLE:
-      // Green LED on 
-      setPin(RED_LED, OFF);
-      setPin(GREEN_LED, ON);
-      setPin(BLUE_LED, OFF);
-      setPin(YELLOW_LED, OFF);
-
-      setPin(FAN, OFF);
-      adjustVents();
-      // Temperature data is updated every minute from timer ISR
-      if (adc_read(WATER_LEVEL_SENSOR) <= WATER_LEVEL_THRESHOLD) {
-        printString(getDateString() + "    ERROR: WATER LEVEL TOO LOW (" + String(adc_read(WATER_LEVEL_SENSOR)) + "- NEED >" + String(WATER_LEVEL_THRESHOLD) + ")\n");
-        coolerState = ERROR;
-
-      } else if (temperature >= TEMPERATURE_HIGH) {
-        printString(getDateString() + "    TEMPERATURE TOO HOT - FAN TURNING ON\n");
-        coolerState = RUNNING;
-      }
-      break;
-
-
-    case RUNNING:
-      // Blue LED on 
       setPin(RED_LED, OFF);
       setPin(GREEN_LED, OFF);
-      setPin(BLUE_LED, ON);
-      setPin(YELLOW_LED, OFF);
-
-      setPin(FAN, ON);
-      adjustVents();
-
-      // Temperature data is updated every minute from timer ISR
-      if (adc_read(WATER_LEVEL_SENSOR) <= WATER_LEVEL_THRESHOLD) {
-        printString(getDateString() + "    ERROR: WATER LEVEL TOO LOW (" + String(adc_read(WATER_LEVEL_SENSOR)) + "- NEED >" + String(WATER_LEVEL_THRESHOLD) + ")\n");
-        coolerState = ERROR;
-      } else if (temperature <= TEMPERATURE_TARGET) {
-        printString(getDateString() + "    TARGET TEMPERATURE REACHED - FAN TURNING OFF\n");
-        coolerState = IDLE;
-      }
+      setPin(BLUE_LED, OFF);
+      
       break;
 
+      case IDLE:
+        updateDisplay = true;
+        // Green LED on
+        setPin(YELLOW_LED, OFF);
+        setPin(RED_LED, OFF);
+        setPin(GREEN_LED, ON);
+        setPin(BLUE_LED, OFF);
 
-    case ERROR:
-      // Red LED on
-      setPin(RED_LED, ON);
-      setPin(GREEN_LED, OFF);
-      setPin(BLUE_LED, OFF);
-      setPin(YELLOW_LED, OFF);
-      Serial.println(adc_read(WATER_LEVEL_SENSOR));
-      stopDisplayRefreshTimer();
-      lcd.clear();
-      lcd.print("ERROR - WATER LOW");
+        adjustVents();
 
-      setPin(FAN, OFF);
-      if (isButtonPressed(RESET_BUTTON)) {
-        if (adc_read(WATER_LEVEL_SENSOR) > WATER_LEVEL_THRESHOLD) {
-          coolerState = IDLE;
-          printString(getDateString() + "    WATER LEVEL VALID, RETURNING TO IDLE\n");
-          updateAndDisplayTemperatureData();
-          startDisplayRefreshTimer();
-        } else {
-          printString(getDateString() + "    CANT RETURN TO IDLE, NOT ENOUGHT WATER (" + String(adc_read(WATER_LEVEL_SENSOR)) + " - NEED >" + String(WATER_LEVEL_THRESHOLD) + ")\n");
+        setPin(FAN, OFF);
+
+
+
+        waterLevel = adc_read(WATER_LEVEL_SENSOR);
+        if (waterLevel <= WATER_LEVEL_THRESHOLD) {
+          printString(getDateString() + "    WATER LEVEL TOO LOW (" + String(waterLevel) + ") - NEEDS TO BE > " + String(WATER_LEVEL_THRESHOLD) + "\n");
+          coolerState = ERROR;
+        } else if (temperature >= TEMPERATURE_HIGH) {
+          printString(getDateString() + "    TEMPERATURE TOO HOT (" + String(temperature) + " >= " + String(TEMPERATURE_HIGH) + "), TURNING FAN ON\n"); 
+          coolerState = RUNNING;
         }
-      }
-      break;
+        break;
+
+
+      case RUNNING:
+        updateDisplay = true;
+
+        // BLUE LED on
+        setPin(YELLOW_LED, OFF);
+        setPin(RED_LED, OFF);
+        setPin(GREEN_LED, OFF);
+        setPin(BLUE_LED, ON);
+
+
+        adjustVents();
+
+        setPin(FAN, ON);
+
+
+        waterLevel = adc_read(WATER_LEVEL_SENSOR);
+        if (waterLevel <= WATER_LEVEL_THRESHOLD) {
+          printString(getDateString() + "    WATER LEVEL TOO LOW (" + String(waterLevel) + ") - NEEDS TO BE > " + String(WATER_LEVEL_THRESHOLD) + "\n");
+          coolerState = ERROR;
+        } else if (temperature <= TEMPERATURE_TARGET) {
+          printString(getDateString() + "    TARGET TEMPERATURE REACHED (" + String(temperature) + "), TURNING FAN OFF\n"); 
+          coolerState = IDLE;
+        }
+
+        break;
+
+
+      case ERROR:
+        updateDisplay = false;
+
+        // RED LED on
+        setPin(YELLOW_LED, OFF);
+        setPin(RED_LED, ON);
+        setPin(GREEN_LED, OFF);
+        setPin(BLUE_LED, OFF);
+
+        lcd.clear();
+        lcd.print("ERROR");
+        lcd.setCursor(0, 1);
+        lcd.print("Water low    >:(");
+
+        setPin(FAN, OFF);
+
+        waterLevel = adc_read(WATER_LEVEL_SENSOR);
+        if (isButtonPressed(RESET_BUTTON)) {
+          if (waterLevel > WATER_LEVEL_THRESHOLD) {
+            printString(getDateString() + "    WATER LEVEL VALID (" + String(waterLevel) + "), RETURNING TO IDLE\n");
+            updateAndDisplayTemperatureData();
+          coolerState = IDLE;
+          } else {
+            printString(getDateString() + "    WATER LEVEL INVALID (" + String(waterLevel) + ") - NEEDS TO BE " + String(WATER_LEVEL_THRESHOLD) + "\n"); 
+          }
+        }
+        break;
   }
+
 }
 
 
@@ -290,6 +313,7 @@ void adjustVents()
   if (stepsToMove < -VENT_ADC_TOLERANCE || VENT_ADC_TOLERANCE < stepsToMove) {
     ventStepperPositition = potVal;
     ventStepper.step(stepsToMove/STEP_RATIO_FOR_VENTS);
+    printString(getDateString() + "    VENTS ADJUSTED\n");
   }
 }
 
@@ -334,17 +358,6 @@ void setPin(unsigned char pin, bool onOff)
 }
 
 
-void startDisplayRefreshTimer()
-{
-  *myTCCR1B |= TIMER_START;
-}
-
-
-void stopDisplayRefreshTimer()
-{
-  *myTCCR1B |= TIMER_STOP;
-}
-
 
 String getDateString()
 {
@@ -356,7 +369,7 @@ String getDateString()
   date += "/";
   date += rtc.year();
 
-  date += "    ";
+  date += "  ";
 
   date += rtc.hour();
   date += ":";
@@ -368,7 +381,7 @@ String getDateString()
 }
 
 
-//Start button ISR
+// Start button ISR
 ISR(PCINT0_vect)
 {
   if (!debouncing) {
@@ -376,34 +389,15 @@ ISR(PCINT0_vect)
     if (isButtonPressed(START_STOP_BUTTON)) {
       if (coolerState == DISABLED)
       {
-        coolerState = IDLE;
         printString(getDateString() + "    START BUTTON PRESSED: GOING TO IDLE\n");
         updateAndDisplayTemperatureData();
-        startDisplayRefreshTimer();
+        coolerState = IDLE;
       } else {
         printString(getDateString() + "    STOP BUTTON PRESSED: GOING TO DISABLED\n");
         coolerState = DISABLED;
       }
     }
     debouncing = true;
-  }
-}
-
-// TIMER OVERFLOW ISR
-ISR(TIMER1_OVF_vect)
-{
-  // Stop the Timer
-  *myTCCR1B &= TIMER_STOP;
-  // Load the Count
-  *myTCNT1 =  (unsigned int) (65535 -  (unsigned long) (TICKS_PER_SECOND));
-  // Serial.print("TIMER");
-  // Start the Timer
-  *myTCCR1B |= TIMER_START;
-
-  seconds++;
-  if (seconds >= SECONDS_PER_UPDATE) {
-    seconds = 0;
-    updateDisplay = true;
   }
 }
 
@@ -481,24 +475,4 @@ void putChar(unsigned char U0pdata)
   while((*myUCSR0A & TBE)==0);
   *myUDR0 = U0pdata;
 }
-
-
-
-void setup_timer_regs()
-{
-  // setup the timer control registers
-  *myTCCR1A= 0x00;
-  *myTCCR1B= 0X00;
-  *myTCCR1C= 0x00;
-  
-  // reset the TOV flag
-  *myTIFR1 |= 0x00000001;
-  
-  // enable the TOV interrupt
-  *myTIMSK1 |= 0x00000001;
-
-  *myTCNT1 =  (unsigned int) (65535 -  (unsigned long) (TICKS_PER_SECOND));
-  *myTCCR1B |= TIMER_START;
-}
-
 
